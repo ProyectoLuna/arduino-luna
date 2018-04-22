@@ -35,6 +35,49 @@ uint32_t millisTimer=0;
 uint32_t transactionid = 0;
 uint8_t buff[256];
 
+volatile int relayState = HIGH;
+volatile int buttonState = HIGH;
+
+const int relayPin = 2;
+const int buttonPin = 3;
+int analogPin = 0;
+float amplitude_current;
+float effective_value;
+ 
+void interruptToggle() 
+{
+  if (relayState == LOW)
+  {
+    relayState = HIGH;
+    digitalWrite(relayPin, relayState);
+  }
+  else
+  {
+    relayState = LOW;
+    digitalWrite(relayPin, relayState);
+  }    
+}
+
+// EL valor de la potencia efectiva Pe es igual a
+// Pe = Ie * Ve * 0.9 
+/*Function: Sample for 1000ms and get the maximum value from the SIG pin*/
+int getMaxValue()
+{
+  int sensorValue; //value read from the sensor
+  int sensorMax = 0;
+  uint32_t start_time = millis();
+  while((millis()-start_time) < 1000)//sample for 1000ms
+  {
+    sensorValue = analogRead(analogPin);
+    if (sensorValue > sensorMax)
+    {
+      /*record the maximum sensor value*/
+      sensorMax = sensorValue;
+    }
+  }
+  return sensorMax;
+}
+
 void setup() {
   //EEPROM.write(addr, nodeID);
   nodeID = EEPROM.read(addr);
@@ -48,21 +91,55 @@ void setup() {
   
   Serial.print("nodeID: ");
   Serial.print(nodeID, DEC); 
-  Serial.println();   
+  Serial.println();
+
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, relayState);
+
+  pinMode(buttonPin, INPUT);
+  buttonState = digitalRead(buttonPin);
+  //attachInterrupt(digitalPinToInterrupt(buttonPin), interruptToggle, CHANGE);
 }
 
 
 void loop() {
   
   mesh.update();
+  
   char reqmsg[16] = {0};
 
+  int currentButtonState = digitalRead(buttonPin);
+  if (buttonState != currentButtonState)
+  {
+    buttonState = currentButtonState;
+    if (relayState == LOW)
+    {
+      relayState = HIGH;
+      digitalWrite(relayPin, relayState);
+    }
+    else
+    {
+      relayState = LOW;
+      digitalWrite(relayPin, relayState);
+    }    
+  }
+  
   if(network.available()){
         RF24NetworkHeader header;
         //uint32_t mills;
         network.read(header,reqmsg,sizeof(reqmsg));
         Serial.print("Rcv "); Serial.print(reqmsg);
         Serial.print(" from nodeID ");
+        if (relayState == LOW)
+        {
+          relayState = HIGH;
+          digitalWrite(relayPin, relayState);
+        }
+        else
+        {
+          relayState = LOW;
+          digitalWrite(relayPin, relayState);
+        }
         int _ID = mesh.getNodeID(header.from_node);
         if( _ID >= 0){
            Serial.println(_ID);
@@ -77,6 +154,19 @@ void loop() {
   
   // Send to the other node every second
   if(millis() - millisTimer >= 1000){
+    int sensor_max;
+    sensor_max = getMaxValue();
+    Serial.print("sensor_max = ");
+    Serial.println(sensor_max);
+    //the VCC on the Grove interface of the sensor is 5v
+    amplitude_current=(float)sensor_max/1024*5/200*1000000;
+    effective_value=amplitude_current/1.414;
+    //Minimum current value can be detected=1/1024*5/200*1000000/1.414=24.4(mA)
+    //Only for sinusoidal alternating current
+    Serial.println("The amplitude of the current is(in mA)");
+    Serial.println(amplitude_current,1);//Only one number after the decimal point
+    Serial.println("The effective value of the current is(in mA)");
+    Serial.println(effective_value,1);
     millisTimer = millis();
 
     size_t message_length;
@@ -93,12 +183,12 @@ void loop() {
     RepeatedSensorData repeatedData;
 
     SensorData sensorData[4];
-    int numData = 1;
-    for (int i = 0; i < numData; ++i)
-    {
-        sensorData[i].unit = SensorUnits_SU_MAH;
-        sensorData[i].value = millisTimer;
-    }
+    int numData = 2;
+    
+    sensorData[0].unit = SensorUnits_SU_MAH;
+    sensorData[0].value = effective_value;
+    sensorData[1].unit = SensorUnits_SU_RELAYSTATUS;
+    sensorData[1].value = !relayState;
 
     repeatedData.data = sensorData;
     repeatedData.num = numData;
