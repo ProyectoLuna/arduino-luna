@@ -33,7 +33,7 @@ int addr = 0;
 byte nodeID = 10;
 uint32_t millisTimer=0;
 uint32_t transactionid = 0;
-uint8_t buff[256];
+uint8_t buff[64];
 
 volatile int relayState = HIGH;
 volatile int buttonState = HIGH;
@@ -80,18 +80,18 @@ int getMaxValue()
 
 void setup() {
   //EEPROM.write(addr, nodeID);
-  nodeID = EEPROM.read(addr);
+  //nodeID = EEPROM.read(addr);
+  nodeID = 1;
   
   Serial.begin(115200);
   // Set the nodeID
   mesh.setNodeID(nodeID); 
   // Connect to the mesh
-  Serial.println(F("Connecting to the mesh..."));
   mesh.begin();
   
-  Serial.print("nodeID: ");
-  Serial.print(nodeID, DEC); 
-  Serial.println();
+  //Serial.print("nodeID: ");
+  //Serial.print(nodeID, DEC); 
+  //Serial.println();
 
   pinMode(relayPin, OUTPUT);
   digitalWrite(relayPin, relayState);
@@ -101,12 +101,12 @@ void setup() {
   //attachInterrupt(digitalPinToInterrupt(buttonPin), interruptToggle, CHANGE);
 }
 
-
+char reqmsg[19] = {0};
 void loop() {
   
   mesh.update();
   
-  char reqmsg[16] = {0};
+  
 
   int currentButtonState = digitalRead(buttonPin);
   if (buttonState != currentButtonState)
@@ -127,9 +127,8 @@ void loop() {
   if(network.available()){
         RF24NetworkHeader header;
         //uint32_t mills;
-        network.read(header,reqmsg,sizeof(reqmsg));
-        Serial.print("Rcv "); Serial.print(reqmsg);
-        Serial.print(" from nodeID ");
+        int len = network.read(header,reqmsg,sizeof(reqmsg));
+        
         if (relayState == LOW)
         {
           relayState = HIGH;
@@ -143,30 +142,26 @@ void loop() {
         int _ID = mesh.getNodeID(header.from_node);
         if( _ID >= 0){
            Serial.println(_ID);
-        }else{
-           Serial.println("Mesh ID Lookup Failed"); 
         }
   }
-//  else
-//  {
-//    Serial.println("Network busy");
-//  }
+  else
+  {
+    //Serial.println("Network busy");
+  }
   
   // Send to the other node every second
   if(millis() - millisTimer >= 1000){
     int sensor_max;
     sensor_max = getMaxValue();
-    Serial.print("sensor_max = ");
-    Serial.println(sensor_max);
+//    Serial.print("sensor_max = ");
+//    Serial.println(sensor_max);
     //the VCC on the Grove interface of the sensor is 5v
     amplitude_current=(float)sensor_max/1024*5/200*1000000;
     effective_value=amplitude_current/1.414;
     //Minimum current value can be detected=1/1024*5/200*1000000/1.414=24.4(mA)
     //Only for sinusoidal alternating current
-    Serial.println("The amplitude of the current is(in mA)");
-    Serial.println(amplitude_current,1);//Only one number after the decimal point
-    Serial.println("The effective value of the current is(in mA)");
-    Serial.println(effective_value,1);
+//    Serial.println("mA");
+//    Serial.println(effective_value,1);
     millisTimer = millis();
 
     size_t message_length;
@@ -180,20 +175,22 @@ void loop() {
     message.header.unique_id.radio_id = RadioId_RID_NRF24;
     message.header.unique_id.id32 = nodeID;
 
-    RepeatedSensorData repeatedData;
+    RepeatedDevData repeatedData;
 
-    SensorData sensorData[4];
+    RemoteDevData sensorData[4];
     int numData = 2;
-    
-    sensorData[0].unit = SensorUnits_SU_MAH;
-    sensorData[0].value = effective_value;
-    sensorData[1].unit = SensorUnits_SU_RELAYSTATUS;
-    sensorData[1].value = !relayState;
+
+    sensorData[0].has_sensor_data = true;
+    sensorData[0].sensor_data.unit = SensorUnits_SU_MA;
+    sensorData[0].sensor_data.value = effective_value;
+    sensorData[1].has_sensor_data = true;
+    sensorData[1].sensor_data.unit = SensorUnits_SU_RELAYSTATUS;
+    sensorData[1].sensor_data.value = !relayState;
 
     repeatedData.data = sensorData;
     repeatedData.num = numData;
 
-    message.data.funcs.encode = &encode_repeated_sensordata;
+    message.data.funcs.encode = &encode_repeated_devdata;
     message.data.arg = &repeatedData;
 
     status = pb_encode(&stream, RemoteDevMessage_fields, &message);
@@ -203,16 +200,17 @@ void loop() {
     if (!status)
     {
         Serial.println("Encoding failed");
+        Serial.println(PB_GET_ERROR(&stream));
     }
     
     // Send an 'M' type to other Node containing the current millis()
     //if(!mesh.write(&millisTimer,'M',sizeof(millisTimer),otherNodeID)){
     if(!mesh.write(buff,'M', stream.bytes_written,otherNodeID)){
             if( ! mesh.checkConnection() ){
-              Serial.println("Renewing Address");
+              //Serial.println("Renewing Address");
               mesh.renewAddress(); 
             }else{
-              Serial.println("Send fail, Test OK"); 
+              //Serial.println("Send fail"); 
             }
     }
   }
