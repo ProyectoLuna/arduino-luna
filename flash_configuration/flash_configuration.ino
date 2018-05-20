@@ -1,7 +1,7 @@
 #include <EEPROM.h>
 #include "lunapb.h"
 
-#define MAX_SENSOR_DATA 6
+#define MAX_SENSOR_DATA 4
 #define MAX_DEVICE_TYPES 2
 
 struct DeviceEEPROMParams

@@ -1,19 +1,17 @@
-#include <SPI.h>
 #include <EEPROM.h>
 #include "RF24.h"
 #include "RF24Network.h"
 #include "RF24Mesh.h"
 #include "lunapb.h"
 
-#define MAX_SENSOR_DATA 6
+#define MAX_SENSOR_DATA 4
 #define MAX_DEVICE_TYPES 2
 #define MAX_DEVICE_CONFIG 4
 #define MAX_SENSOR_COMMANDS 2
 
 uint32_t millisTimer=0;
-char buff[128] = {0};
-uint32_t transactionid = 0;
-int EEPROMAddr = 0;
+char buff[80] = {0};
+//uint32_t transactionid = 0;
 
 struct DeviceEEPROMParams
 {
@@ -80,7 +78,7 @@ int Atmega328PACSensor::getMaxValue()
   int sensorValue; //value read from the sensor
   int sensorMax = 0;
   uint32_t start_time = millis();
-  while((millis() - start_time) < 1000)//sample for 1000ms
+  while((millis() - start_time) < 400)//sample for t ms
   {
     sensorValue = analogRead(analogPin);
     if (sensorValue > sensorMax)
@@ -115,16 +113,14 @@ public:
   bool getData(SensorData *data) override;
   bool execCommand(SensorCommand *cmd) override;
 private:
-  int _relayPin;
   volatile int _relayState;
 };
 
 Atmega328PRelay::Atmega328PRelay() : DeviceConfig()
 {
   _relayState = HIGH;
-  _relayPin = 2;
-  pinMode(_relayPin, OUTPUT);
-  digitalWrite(_relayPin, _relayState);
+  pinMode(2, OUTPUT);
+  digitalWrite(2, _relayState);
 }
 
 bool Atmega328PRelay::getData(SensorData *data)
@@ -143,12 +139,12 @@ bool Atmega328PRelay::execCommand(SensorCommand *cmd)
       if (_relayState == LOW)
       {
         _relayState = HIGH;
-        digitalWrite(_relayPin, _relayState);
+        digitalWrite(2, _relayState);
       }
       else
       {
         _relayState = LOW;
-        digitalWrite(_relayPin, _relayState);
+        digitalWrite(2, _relayState);
       }
       break;
     }
@@ -273,19 +269,18 @@ Message RadioNRF24::receive()
   {
     RF24NetworkHeader header;
     size_t msgLength = _nrf24Network->read(header, buff, sizeof(buff));
-    Serial.print("Rx node: ");
+    // Serial.print("Rx: ");
     
     int _ID = _nrf24Mesh->getNodeID(header.from_node);
     if( _ID >= 0)
     {
-      Serial.println(_ID);
+      // Serial.println(_ID);
+      return Message(buff, msgLength);
     }
     else
     {
       return Message();
     }
-
-    return Message(buff, msgLength);
   }
   
   return Message();
@@ -302,12 +297,14 @@ bool RadioNRF24::send(Message *msg)
   {
     if(!_nrf24Mesh->checkConnection())
     {
-      Serial.println("Renew Addr");
+      // Serial.println("Renew Addr"); // DEBUG
       _nrf24Mesh->renewAddress(); 
+      return false;
     }
     else
     {
-      Serial.println("Send fail");
+      //Serial.println("Send fail"); // DEBUG
+      return false;
     }
   }
   return true;
@@ -346,29 +343,29 @@ bool Device::update()
   return true;
 }
 
-bool Device::execCommand(Message *message)
+RepeatedDevData repeatedData;
+RemoteDevData devData[MAX_SENSOR_DATA];
+RemoteDevMessage message;
+pb_istream_t istream;
+pb_ostream_t stream;
+
+bool Device::execCommand(Message *inmessage)
 {
-  char *rxbuff = message->getBuffer();
-  size_t len = message->getLength();
+  char *rxbuff = inmessage->getBuffer();
     
-  RemoteDevMessage rmtMessage;
-  rmtMessage = RemoteDevMessage_init_zero;
-  pb_istream_t stream = pb_istream_from_buffer(rxbuff, len);
+  message = RemoteDevMessage_init_zero;
+  istream = pb_istream_from_buffer(rxbuff, inmessage->getLength());
   
-  RepeatedDevData repeatedData;
   repeatedData.num = 0;
-  RemoteDevData devData[MAX_SENSOR_COMMANDS];
   repeatedData.data = devData;
 
-  rmtMessage.data.funcs.decode = &decode_devdata;
-  rmtMessage.data.arg = &repeatedData;
-  
-  bool status = pb_decode(&stream, RemoteDevMessage_fields, &rmtMessage);
+  message.data.funcs.decode = &decode_devdata;
+  message.data.arg = &repeatedData;
 
-  if (!status)
+  if (!pb_decode(&istream, RemoteDevMessage_fields, &message))
   {
-    Serial.print("Deco fail ");
-    Serial.println(PB_GET_ERROR(&stream));
+    // Serial.print("Deco fail "); // DEBUG
+    // Serial.println(PB_GET_ERROR(&stream)); // DEBUG
     return false;
   }
 
@@ -386,26 +383,17 @@ bool Device::execCommand(Message *message)
   return true;
 }
 
-RepeatedDevData repeatedData;
-RemoteDevData devData[MAX_SENSOR_DATA];
-RemoteDevMessage message;
-size_t len;
-bool status;
+byte paramToSend = 0;
+
 Message Device::genMessage()
 {
-//  size_t len;
-//  bool status;
-  
-  //RemoteDevMessage message = RemoteDevMessage_init_zero;
   message = RemoteDevMessage_init_zero;
 
-  pb_ostream_t stream = pb_ostream_from_buffer(buff, sizeof(buff));
+  stream = pb_ostream_from_buffer(buff, sizeof(buff));
 
-  message.header.transaction_id = transactionid++;
+  message.header.transaction_id = 0;
   message.header.unique_id.radio_id = _params.radioId;
   message.header.unique_id.id32 = _params.id;
-
-  //RepeatedDevData repeatedData;
 
   int numSensorData = 0;
   for (int i = 0; i < MAX_SENSOR_DATA; ++i)
@@ -417,30 +405,35 @@ Message Device::genMessage()
   }
 
   //RemoteDevData devData[MAX_SENSOR_DATA];
-  for (int i = 0; i < MAX_SENSOR_DATA; ++i)
+  //for (int i = 0; i < MAX_SENSOR_DATA; ++i)
   //for (int i = 0; i < 1; ++i)
+  if (paramToSend == 0)
   {
-    devData[i].has_sensor_data = true;
-    devData[i].sensor_data = _params.sensorData[i];
+    paramToSend = 1;
+    devData[0].has_sensor_data = true;
+    devData[0].sensor_data = _params.sensorData[paramToSend];
+  }
+  else 
+  {
+    paramToSend = 0;
+    devData[0].has_sensor_data = true;
+    devData[0].sensor_data = _params.sensorData[paramToSend];
   }
   
   repeatedData.data = devData;
-  repeatedData.num = numSensorData;
-  //repeatedData.num = 1;
+  //repeatedData.num = numSensorData;
+  repeatedData.num = 1;
 
   message.data.funcs.encode = &encode_repeated_devdata;
   message.data.arg = &repeatedData;
 
-  status = pb_encode(&stream, RemoteDevMessage_fields, &message);
-  len = stream.bytes_written;
-
-  if (!status)
+  if (!pb_encode(&stream, RemoteDevMessage_fields, &message))
   {
-    Serial.println("Enco fail");
+    // Serial.println("Enco fail"); // DEBUG
     return Message();
   }
 
-  return Message(buff, len);
+  return Message(buff, stream.bytes_written);
 }
 
 Atmega328PACSensor atmega328PACSensor;
@@ -452,12 +445,12 @@ Radio *radio;
 void setup() 
 {
   Serial.begin(115200);
-  Serial.println("setup");
+  // Serial.println("setup"); // DEBUG
   
   availableConfigurations[MicrocontrollerType_MC_ATMEGA328P][DeviceType_DT_AC_SENSOR] = &atmega328PACSensor;
   availableConfigurations[MicrocontrollerType_MC_ATMEGA328P][DeviceType_DT_RELAY] = &atmega328PRelay;
 
-  EEPROM.get(EEPROMAddr, eepromParams);
+  EEPROM.get(0x0, eepromParams);
   device = new Device();
 
   switch (eepromParams.deviceEEPROMParams.radioId)
@@ -475,24 +468,23 @@ void setup()
   }
 }
 
+Message message2;
 void loop() 
 {
   radio->updateStatus();
-
-  Message rxMessage = radio->receive();
-  if (rxMessage.getBuffer())
+  
+  message2 = radio->receive();
+  if (message2.getBuffer())
   {
-    device->execCommand(&rxMessage);
-    device->update();
-    Message txMessage = device->genMessage();
-    radio->send(&txMessage);
+    device->execCommand(&message2);
+    millisTimer = 0; // Force send
   }
 
   if(millis() - millisTimer >= 1000)
   {
     device->update();
-    Message txMessage = device->genMessage();
-    radio->send(&txMessage);
+    message2 = device->genMessage();
+    radio->send(&message2);
     
     millisTimer = millis();
   }
